@@ -1,5 +1,6 @@
 package com.campusconnect.app.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
@@ -21,6 +22,9 @@ class ProfileViewModel(
 
     private val _updateState = MutableLiveData<Resource<StudentProfile>?>()
     val updateState: LiveData<Resource<StudentProfile>?> = _updateState
+
+    private val _resumeUploadState = MutableLiveData<Resource<String>?>()
+    val resumeUploadState: LiveData<Resource<String>?> = _resumeUploadState
 
     private val _savedPostsState = MutableLiveData<Resource<List<Post>>>()
     val savedPostsState: LiveData<Resource<List<Post>>> = _savedPostsState
@@ -45,6 +49,21 @@ class ProfileViewModel(
                 _studentProfile.value = res
             }
         }
+    }
+
+    fun uploadResume(fileUri: Uri, fileName: String) {
+        _resumeUploadState.value = Resource.Loading()
+        viewModelScope.launch {
+            val res = placementRepository.uploadResume(fileUri, fileName)
+            _resumeUploadState.value = res
+            if (res is Resource.Success) {
+                loadStudentProfile()
+            }
+        }
+    }
+
+    fun clearResumeUploadState() {
+        _resumeUploadState.value = null
     }
 
     fun clearUpdateState() {

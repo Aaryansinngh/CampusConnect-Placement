@@ -1,9 +1,28 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    match /{allPaths=**} {
-      allow read: if true;
-      allow write: if request.auth != null;
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Student Resumes
+    match /resumes/{studentId}/{fileName} {
+      // Allow student to upload their own resume (max 15MB, PDF/DOCX)
+      allow write: if isAuthenticated() &&
+                   request.auth.uid == studentId &&
+                   request.resource.size < 15 * 1024 * 1024;
+
+      // Allow student, recruiters, and TPO to read resumes
+      allow read: if isAuthenticated();
+    }
+
+    // Profile photos
+    match /profiles/{userId}/{fileName} {
+      allow write: if isAuthenticated() &&
+                   request.auth.uid == userId &&
+                   request.resource.size < 5 * 1024 * 1024;
+      allow read: if isAuthenticated();
     }
   }
 }

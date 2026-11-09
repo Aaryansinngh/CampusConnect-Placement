@@ -98,6 +98,19 @@ This document tracks progress, status, deliverables, and test scenarios across a
 - [x] **[Phase 8]** Executed full backend pytest suite: **20/20 tests PASSED in 16.93s**.
 - [x] **[Phase 8]** Executed web production build: **1,687 modules transformed in 8.68s, 0 errors**.
 - [x] **[Phase 8]** Executed Android debug compilation: **`assembleDebug` verified in 24s, 0 errors**.
+- [x] **[Firebase Integration]** Created `FirebaseManager.kt` singleton with Auth, Firestore (offline persistence), and Storage lazy initialisation.
+- [x] **[Firebase Integration]** Rewrote `AuthRepositoryImpl` with 3-tier login: FastAPI → Firebase Auth → offline demo fallback; signup creates Firestore `users` + `students` + `academic_records` + `notifications` documents atomically.
+- [x] **[Firebase Integration]** Rewrote `PlacementRepositoryImpl` with Firestore read-through cache for drives, applications, and profile; resume uploads via Firebase Storage.
+- [x] **[Firebase Integration]** Added `uploadResume()` to `ProfileViewModel` and wired file-picker (`GetContent`) in `ProfileFragment`.
+- [x] **[Firebase Integration]** Authored `firestore.rules` (role-based Firestore Security Rules) and `storage.rules` (path-ownership resume restrictions).
+- [x] **[Firebase Integration]** Authored `FIREBASE_SETUP.md` documenting architecture, collection schemas, security rules deployment, and real-time sync mechanism.
+- [x] **[Submit Button Fixes]** Fixed `PlacementDriveDetailFragment`: button always enabled, ineligible tap shows `AlertDialog` with specific reasons, loading state, duplicate-application Snackbar.
+- [x] **[Submit Button Fixes]** Rewrote `LoginFragment` and `SignupFragment` with field-level `TextInputLayout` error display, loading states, and meaningful error messages.
+- [x] **[Submit Button Fixes]** Fixed `InterviewBookingFragment`: confirms slot selection before `bookSlot()`, shows Snackbar if no slot tapped, button disabled during in-flight request.
+- [x] **[Submit Button Fixes]** Fixed `CreatePostFragment` and `CreateEventFragment` with required-field validation and loading states.
+- [x] **[Re-Verification 2026-11-10]** Executed full backend pytest suite: **20/20 tests PASSED in 17.11s**.
+- [x] **[Re-Verification 2026-11-10]** Executed web production build: **1,687 modules transformed in 8.35s, 0 errors**.
+- [x] **[Re-Verification 2026-11-10]** Executed Android debug build: **`assembleDebug` BUILD SUCCESSFUL, 37 tasks UP-TO-DATE, 27s**.
 
 ---
 

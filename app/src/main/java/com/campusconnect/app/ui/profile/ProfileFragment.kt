@@ -1,5 +1,6 @@
 package com.campusconnect.app.ui.profile
 
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -7,6 +8,7 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
@@ -19,6 +21,7 @@ import com.campusconnect.app.utils.Resource
 import com.campusconnect.app.viewmodel.AuthViewModel
 import com.campusconnect.app.viewmodel.ProfileViewModel
 import com.campusconnect.app.viewmodel.ViewModelFactory
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 
@@ -30,6 +33,14 @@ class ProfileFragment : Fragment() {
     private val profileViewModel: ProfileViewModel by viewModels { ViewModelFactory(requireContext()) }
 
     private var currentProfile: StudentProfile? = null
+
+    private val resumeFilePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val fileName = "resume_${System.currentTimeMillis()}.pdf"
+            Snackbar.make(binding.root, "Uploading resume to Firebase Storage...", Snackbar.LENGTH_LONG).show()
+            profileViewModel.uploadResume(uri, fileName)
+        }
+    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentProfileBinding.inflate(inflater, container, false)
@@ -128,6 +139,23 @@ class ProfileFragment : Fragment() {
                 }
             }
         }
+
+        profileViewModel.resumeUploadState.observe(viewLifecycleOwner) { state ->
+            if (state == null) return@observe
+            when (state) {
+                is Resource.Loading -> {
+                    Snackbar.make(binding.root, "Uploading resume to Firebase Storage...", Snackbar.LENGTH_LONG).show()
+                }
+                is Resource.Success -> {
+                    Snackbar.make(binding.root, "✓ Resume successfully uploaded and synchronized with Firebase!", Snackbar.LENGTH_LONG).show()
+                    profileViewModel.clearResumeUploadState()
+                }
+                is Resource.Error -> {
+                    Snackbar.make(binding.root, state.message ?: "Resume upload failed", Snackbar.LENGTH_LONG).show()
+                    profileViewModel.clearResumeUploadState()
+                }
+            }
+        }
     }
 
     private fun bindStudentProfile(profile: StudentProfile) {
@@ -137,7 +165,7 @@ class ProfileFragment : Fragment() {
             tvProfileCgpa.text = String.format("%.2f", profile.currentCgpa)
             tvProfileBacklogs.text = profile.activeBacklogs.toString()
             tvProfileBatch.text = profile.graduationYear.toString()
-            tvProfileDegree.text = "Degree: ${profile.degree}"
+            tvProfileDegree.text = "Degree: ${profile.degree ?: "B.Tech"}"
 
             tvRoleBadge.text = if (profile.isVerified) "✓ Verified Student" else "Pending Verification"
             tvRoleBadge.setBackgroundResource(
@@ -168,7 +196,7 @@ class ProfileFragment : Fragment() {
             setText(currentProfile?.phoneNumber ?: "")
         }
         val etResume = EditText(context).apply {
-            hint = "Resume URL (Drive/PDF link)"
+            hint = "Resume URL or upload below"
             setText(currentProfile?.resumeUrl ?: "")
         }
         val etSkills = EditText(context).apply {
@@ -176,14 +204,22 @@ class ProfileFragment : Fragment() {
             setText(currentProfile?.skills?.joinToString(", ") ?: "")
         }
 
+        val btnPickResume = MaterialButton(context, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            text = "📄 Upload Resume from Phone"
+            setOnClickListener {
+                resumeFilePicker.launch("application/pdf")
+            }
+        }
+
         layout.addView(etPhone)
         layout.addView(etResume)
         layout.addView(etSkills)
+        layout.addView(btnPickResume)
 
         MaterialAlertDialogBuilder(context)
             .setTitle("Edit Placement Details")
             .setView(layout)
-            .setPositiveButton("Save") { _, _ ->
+            .setPositiveButton("Save Details") { _, _ ->
                 val phone = etPhone.text.toString().trim()
                 val resume = etResume.text.toString().trim()
                 val skillsRaw = etSkills.text.toString().trim()

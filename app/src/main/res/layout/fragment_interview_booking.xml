@@ -242,9 +242,11 @@
 
     <!-- Bottom Action Bar -->
     <com.google.android.material.card.MaterialCardView
+        android:id="@+id/cardBottomAction"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
+        android:clickable="false"
         app:cardElevation="8dp"
         app:strokeWidth="0dp">
 
@@ -260,8 +262,10 @@
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:backgroundTint="@color/primary"
-                android:enabled="false"
-                android:text="Select a Slot to Continue"
+                android:clickable="true"
+                android:focusable="true"
+                android:enabled="true"
+                android:text="Confirm Interview Booking"
                 android:textColor="@color/on_primary"
                 android:textSize="15sp"
                 app:cornerRadius="12dp" />

@@ -341,9 +341,11 @@
 
     <!-- Bottom Apply Action Bar -->
     <com.google.android.material.card.MaterialCardView
+        android:id="@+id/cardBottomApply"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
+        android:clickable="false"
         app:cardElevation="8dp"
         app:strokeColor="@color/border_light"
         app:strokeWidth="1dp">
@@ -360,6 +362,8 @@
                 android:id="@+id/btnApplyNow"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
+                android:clickable="true"
+                android:focusable="true"
                 android:text="Submit Application"
                 android:textSize="16sp"
                 android:textStyle="bold"

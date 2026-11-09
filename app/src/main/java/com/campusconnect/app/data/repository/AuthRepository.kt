@@ -1,6 +1,7 @@
 package com.campusconnect.app.data.repository
 
 import android.content.Context
+import com.campusconnect.app.data.firebase.FirebaseManager
 import com.campusconnect.app.data.model.LoginRequest
 import com.campusconnect.app.data.model.StudentProfile
 import com.campusconnect.app.data.model.User
@@ -39,7 +40,10 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
             return@withContext Resource.Error("Email and password cannot be empty.")
         }
 
-        // 1. Try FastAPI Backend Authentication
+        var loggedInUser: User? = null
+        var studentProfile: StudentProfile? = null
+
+        // 1. Authenticate with FastAPI Backend
         try {
             val response = withTimeoutOrNull(4000L) {
                 apiService.login(LoginRequest(trimmedEmail, pass))
@@ -50,39 +54,45 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
                 if (tokenBody != null) {
                     sessionManager.saveAuthTokens(tokenBody.accessToken, tokenBody.refreshToken)
 
-                    // Fetch user and student profile
                     val meResponse = apiService.getCurrentUser()
                     if (meResponse.isSuccessful && meResponse.body() != null) {
                         val me = meResponse.body()!!
-                        val user = User(
+                        loggedInUser = User(
                             uid = me.id,
                             name = me.student?.fullName ?: me.email.substringBefore("@"),
                             email = me.email,
                             role = me.role,
                             studentId = me.student?.registrationNumber ?: ""
                         )
-                        sessionManager.saveUser(user)
-                        if (me.student != null) {
-                            sessionManager.saveStudentProfile(me.student)
-                        }
-                        return@withContext Resource.Success(user)
+                        studentProfile = me.student
                     }
                 }
             } else if (response != null && response.code() == 401) {
                 return@withContext Resource.Error("Invalid email or password.")
             }
         } catch (_: Exception) {
-            // Backend offline or timeout -> Proceed to fallback
+            // Backend offline or timeout
         }
 
-        // 2. Demo & Offline Fallback Mode
-        val sampleUser = SampleDataGenerator.sampleUsers.find {
-            it.email.equals(trimmedEmail, ignoreCase = true)
+        // 2. Synchronize with Firebase Auth & Firestore
+        try {
+            val (fbUser, fbProfile) = FirebaseManager.loginUser(trimmedEmail, pass)
+            if (loggedInUser == null) {
+                loggedInUser = fbUser
+            }
+            if (studentProfile == null && fbProfile != null) {
+                studentProfile = fbProfile
+            }
+        } catch (_: Exception) {
+            // Firebase Auth failed or offline
         }
-        val resultUser = if (sampleUser != null) {
-            sampleUser
-        } else {
-            User(
+
+        // 3. Fallback to Demo/Cached credentials if both network services are offline
+        if (loggedInUser == null) {
+            val sampleUser = SampleDataGenerator.sampleUsers.find {
+                it.email.equals(trimmedEmail, ignoreCase = true)
+            }
+            loggedInUser = sampleUser ?: User(
                 uid = "demo_" + System.currentTimeMillis(),
                 name = trimmedEmail.substringBefore("@").replace(".", " ")
                     .replaceFirstChar { it.uppercase() },
@@ -92,17 +102,21 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
             )
         }
 
-        sessionManager.saveUser(resultUser)
-        val defaultProfile = SampleDataGenerator.sampleStudentProfiles.firstOrNull() ?: StudentProfile(
-            id = "student_alex_01",
-            fullName = resultUser.name,
-            registrationNumber = resultUser.studentId,
-            currentCgpa = 9.4,
-            activeBacklogs = 0
-        )
-        sessionManager.saveStudentProfile(defaultProfile)
+        if (studentProfile == null) {
+            studentProfile = SampleDataGenerator.sampleStudentProfiles.firstOrNull() ?: StudentProfile(
+                id = loggedInUser.uid,
+                fullName = loggedInUser.name,
+                registrationNumber = loggedInUser.studentId,
+                currentCgpa = 8.5,
+                activeBacklogs = 0
+            )
+        }
 
-        Resource.Success(resultUser)
+        // Save session locally
+        sessionManager.saveUser(loggedInUser)
+        sessionManager.saveStudentProfile(studentProfile)
+
+        Resource.Success(loggedInUser)
     }
 
     override suspend fun signup(
@@ -111,34 +125,66 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
         pass: String,
         studentId: String
     ): Resource<User> = withContext(Dispatchers.IO) {
-        if (name.isBlank() || email.isBlank() || pass.isBlank() || studentId.isBlank()) {
+        val trimmedName = name.trim()
+        val trimmedEmail = email.trim()
+        val trimmedId = studentId.trim()
+
+        if (trimmedName.isBlank() || trimmedEmail.isBlank() || pass.isBlank() || trimmedId.isBlank()) {
             return@withContext Resource.Error("Please fill out all required fields.")
         }
         if (pass.length < 6) {
             return@withContext Resource.Error("Password must be at least 6 characters.")
         }
 
-        val newUser = User(
-            uid = "user_" + System.currentTimeMillis(),
-            name = name.trim(),
-            email = email.trim(),
-            role = User.ROLE_STUDENT,
-            studentId = studentId.trim()
-        )
-        sessionManager.saveUser(newUser)
+        var createdUser: User? = null
+        var createdProfile: StudentProfile? = null
 
-        val newProfile = StudentProfile(
-            id = "st_" + System.currentTimeMillis(),
-            userId = newUser.uid,
-            fullName = newUser.name,
-            registrationNumber = newUser.studentId,
-            currentCgpa = 8.0,
-            activeBacklogs = 0,
-            isVerified = false
-        )
-        sessionManager.saveStudentProfile(newProfile)
+        // 1. Create account in Firebase Auth & Firestore
+        try {
+            val (fbUser, fbProfile) = FirebaseManager.registerUser(
+                name = trimmedName,
+                email = trimmedEmail,
+                pass = pass,
+                studentId = trimmedId,
+                role = User.ROLE_STUDENT
+            )
+            createdUser = fbUser
+            createdProfile = fbProfile
+        } catch (e: Exception) {
+            val errorMsg = e.message ?: "Registration failed."
+            if (errorMsg.contains("email address is already in use", ignoreCase = true)) {
+                return@withContext Resource.Error("An account with this email already exists.")
+            }
+            // If offline, continue to local registration
+        }
 
-        Resource.Success(newUser)
+        // 2. Fallback / Local creation if Firebase is offline
+        if (createdUser == null) {
+            val uid = "user_" + System.currentTimeMillis()
+            createdUser = User(
+                uid = uid,
+                name = trimmedName,
+                email = trimmedEmail,
+                role = User.ROLE_STUDENT,
+                studentId = trimmedId
+            )
+            createdProfile = StudentProfile(
+                id = uid,
+                userId = uid,
+                fullName = trimmedName,
+                registrationNumber = trimmedId,
+                currentCgpa = 8.0,
+                activeBacklogs = 0,
+                isVerified = false
+            )
+        }
+
+        sessionManager.saveUser(createdUser)
+        if (createdProfile != null) {
+            sessionManager.saveStudentProfile(createdProfile)
+        }
+
+        Resource.Success(createdUser)
     }
 
     override suspend fun getCurrentUser(): User? {
@@ -152,6 +198,9 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
     override suspend fun logout() = withContext(Dispatchers.IO) {
         try {
             apiService.logout()
+        } catch (_: Exception) {}
+        try {
+            FirebaseManager.auth.signOut()
         } catch (_: Exception) {}
         sessionManager.logout()
     }

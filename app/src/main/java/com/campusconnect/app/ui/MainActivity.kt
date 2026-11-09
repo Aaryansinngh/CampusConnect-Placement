@@ -25,7 +25,9 @@ class MainActivity : AppCompatActivity() {
         navController.addOnDestinationChangedListener { _, destination, _ ->
             when (destination.id) {
                 R.id.splashFragment, R.id.loginFragment, R.id.signupFragment,
-                R.id.placementDriveDetailFragment -> {
+                R.id.placementDriveDetailFragment, R.id.interviewBookingFragment,
+                R.id.eventDetailFragment, R.id.clubDetailFragment,
+                R.id.createPostFragment, R.id.createEventFragment -> {
                     binding.bottomNavigation.visibility = View.GONE
                 }
                 else -> {

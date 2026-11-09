@@ -1,6 +1,8 @@
 package com.campusconnect.app.data.repository
 
 import android.content.Context
+import android.net.Uri
+import com.campusconnect.app.data.firebase.FirebaseManager
 import com.campusconnect.app.data.model.*
 import com.campusconnect.app.data.remote.ApiClient
 import com.campusconnect.app.utils.Resource
@@ -19,6 +21,7 @@ interface PlacementRepository {
     suspend fun withdrawApplication(applicationId: String, reason: String? = null): Resource<ApplicationModel>
     suspend fun getStudentProfile(): Resource<StudentProfile>
     suspend fun updateStudentProfile(phone: String?, resumeUrl: String?, skills: List<String>?): Resource<StudentProfile>
+    suspend fun uploadResume(fileUri: Uri, fileName: String): Resource<String>
     suspend fun getAnnouncements(): Resource<List<AnnouncementModel>>
     suspend fun getRoundsForDrive(driveId: String): Resource<List<RecruitmentRoundModel>>
     suspend fun getSlotsForRound(roundId: String): Resource<List<InterviewSlotModel>>
@@ -35,12 +38,17 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
 
     override suspend fun getPlacementDrives(query: String?): Resource<List<PlacementDriveModel>> =
         withContext(Dispatchers.IO) {
+            // 1. Try FastAPI Backend
             try {
                 val response = withTimeoutOrNull(4000L) {
                     apiService.getPlacementDrives()
                 }
                 if (response != null && response.isSuccessful && response.body() != null) {
                     var list = response.body()!!
+                    try {
+                        FirebaseManager.syncPlacementDrivesToFirestore(list)
+                    } catch (_: Exception) {}
+
                     if (!query.isNullOrBlank()) {
                         list = list.filter {
                             it.jobTitle.contains(query, ignoreCase = true) ||
@@ -52,7 +60,22 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
                 }
             } catch (_: Exception) {}
 
-            // Offline / Demo fallback
+            // 2. Try Firestore Cache
+            try {
+                val firestoreDrives = FirebaseManager.getPlacementDrivesFromFirestore()
+                if (firestoreDrives.isNotEmpty()) {
+                    var list = firestoreDrives
+                    if (!query.isNullOrBlank()) {
+                        list = list.filter {
+                            it.jobTitle.contains(query, ignoreCase = true) ||
+                                    it.companyName.contains(query, ignoreCase = true)
+                        }
+                    }
+                    return@withContext Resource.Success(list)
+                }
+            } catch (_: Exception) {}
+
+            // 3. Offline / Demo fallback
             var list = SampleDataGenerator.samplePlacementDrives.toList()
             if (!query.isNullOrBlank()) {
                 list = list.filter {
@@ -115,12 +138,15 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
 
     override suspend fun applyForDrive(driveId: String): Resource<ApplicationModel> =
         withContext(Dispatchers.IO) {
+            var applicationResult: ApplicationModel? = null
+
+            // 1. Submit to FastAPI Backend
             try {
                 val response = withTimeoutOrNull(4000L) {
                     apiService.submitApplication(ApplicationSubmissionRequest(driveId))
                 }
                 if (response != null && response.isSuccessful && response.body() != null) {
-                    return@withContext Resource.Success(response.body()!!)
+                    applicationResult = response.body()!!
                 } else if (response != null && response.code() == 400) {
                     return@withContext Resource.Error("You have already applied for this placement drive.")
                 } else if (response != null && response.code() == 403) {
@@ -128,38 +154,66 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
                 }
             } catch (_: Exception) {}
 
-            // Offline Demo Mock Application
-            val drive = SampleDataGenerator.samplePlacementDrives.find { it.id == driveId }
-            val existing = SampleDataGenerator.sampleApplications.find { it.driveId == driveId }
-            if (existing != null) {
-                return@withContext Resource.Error("You have already submitted an application for this drive.")
+            // 2. Fallback / Local Application if backend is offline
+            if (applicationResult == null) {
+                val drive = SampleDataGenerator.samplePlacementDrives.find { it.id == driveId }
+                val existing = SampleDataGenerator.sampleApplications.find { it.driveId == driveId }
+                if (existing != null) {
+                    return@withContext Resource.Error("You have already submitted an application for this drive.")
+                }
+
+                applicationResult = ApplicationModel(
+                    id = "app_" + System.currentTimeMillis(),
+                    driveId = driveId,
+                    studentId = sessionManager.getStudentProfile()?.id ?: sessionManager.getUser()?.uid ?: "student_01",
+                    status = "APPLIED",
+                    appliedAt = "Just now",
+                    driveTitle = drive?.jobTitle ?: "Placement Drive",
+                    companyName = drive?.companyName ?: "Campus Partner",
+                    salaryPackage = drive?.salaryPackageCtc ?: "Competitive"
+                )
+                SampleDataGenerator.sampleApplications.add(0, applicationResult)
             }
 
-            val newApp = ApplicationModel(
-                id = "app_" + System.currentTimeMillis(),
-                driveId = driveId,
-                studentId = sessionManager.getStudentProfile()?.id ?: "student_01",
-                status = "APPLIED",
-                appliedAt = "Just now",
-                driveTitle = drive?.jobTitle ?: "Placement Drive",
-                companyName = drive?.companyName ?: "Campus Partner",
-                salaryPackage = drive?.salaryPackageCtc ?: "Competitive"
-            )
-            SampleDataGenerator.sampleApplications.add(0, newApp)
-            Resource.Success(newApp)
+            // 3. Persist to Firestore applications collection
+            try {
+                val currentStudent = sessionManager.getStudentProfile()
+                FirebaseManager.saveApplicationToFirestore(
+                    app = applicationResult,
+                    studentName = currentStudent?.fullName ?: sessionManager.getUser()?.name,
+                    studentRegNo = currentStudent?.registrationNumber ?: sessionManager.getUser()?.studentId
+                )
+            } catch (_: Exception) {}
+
+            Resource.Success(applicationResult)
         }
 
     override suspend fun getMyApplications(): Resource<List<ApplicationModel>> =
         withContext(Dispatchers.IO) {
+            val studentId = sessionManager.getStudentProfile()?.id ?: sessionManager.getUser()?.uid ?: ""
+
+            // 1. Try FastAPI
             try {
                 val response = withTimeoutOrNull(3000L) {
                     apiService.getMyApplications()
                 }
                 if (response != null && response.isSuccessful && response.body() != null) {
-                    return@withContext Resource.Success(response.body()!!)
+                    val apiApps = response.body()!!
+                    return@withContext Resource.Success(apiApps)
                 }
             } catch (_: Exception) {}
 
+            // 2. Try Firestore
+            if (studentId.isNotBlank()) {
+                try {
+                    val firestoreApps = FirebaseManager.getApplicationsFromFirestore(studentId)
+                    if (firestoreApps.isNotEmpty()) {
+                        return@withContext Resource.Success(firestoreApps)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 3. Fallback
             Resource.Success(SampleDataGenerator.sampleApplications.toList())
         }
 
@@ -191,6 +245,9 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
 
     override suspend fun getStudentProfile(): Resource<StudentProfile> =
         withContext(Dispatchers.IO) {
+            val uid = sessionManager.getUser()?.uid ?: ""
+
+            // 1. Try FastAPI
             try {
                 val response = withTimeoutOrNull(3000L) {
                     apiService.getStudentProfile()
@@ -201,6 +258,18 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
                 }
             } catch (_: Exception) {}
 
+            // 2. Try Firestore
+            if (uid.isNotBlank()) {
+                try {
+                    val fbProfile = FirebaseManager.getStudentProfile(uid)
+                    if (fbProfile != null) {
+                        sessionManager.saveStudentProfile(fbProfile)
+                        return@withContext Resource.Success(fbProfile)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 3. Cached / Local Fallback
             val localProfile = sessionManager.getStudentProfile()
                 ?: SampleDataGenerator.sampleStudentProfiles.firstOrNull()
                 ?: StudentProfile(
@@ -218,6 +287,9 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
         resumeUrl: String?,
         skills: List<String>?
     ): Resource<StudentProfile> = withContext(Dispatchers.IO) {
+        val uid = sessionManager.getUser()?.uid ?: ""
+
+        // 1. Update FastAPI
         try {
             val response = withTimeoutOrNull(3000L) {
                 apiService.updateStudentProfile(
@@ -226,11 +298,28 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
             }
             if (response != null && response.isSuccessful && response.body() != null) {
                 sessionManager.saveStudentProfile(response.body()!!)
+                if (uid.isNotBlank()) {
+                    try {
+                        FirebaseManager.updateStudentProfileInFirestore(uid, phone, resumeUrl, skills)
+                    } catch (_: Exception) {}
+                }
                 return@withContext Resource.Success(response.body()!!)
             }
         } catch (_: Exception) {}
 
-        val current = sessionManager.getStudentProfile() ?: StudentProfile()
+        // 2. Update Firestore directly
+        if (uid.isNotBlank()) {
+            try {
+                FirebaseManager.updateStudentProfileInFirestore(uid, phone, resumeUrl, skills)
+            } catch (_: Exception) {}
+        }
+
+        // 3. Update Local Cache
+        val current = sessionManager.getStudentProfile() ?: StudentProfile(
+            id = uid,
+            fullName = sessionManager.getUser()?.name ?: "Student",
+            registrationNumber = sessionManager.getUser()?.studentId ?: ""
+        )
         val updated = current.copy(
             phoneNumber = phone ?: current.phoneNumber,
             resumeUrl = resumeUrl ?: current.resumeUrl,
@@ -238,6 +327,20 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
         )
         sessionManager.saveStudentProfile(updated)
         Resource.Success(updated)
+    }
+
+    override suspend fun uploadResume(fileUri: Uri, fileName: String): Resource<String> = withContext(Dispatchers.IO) {
+        val studentId = sessionManager.getStudentProfile()?.id ?: sessionManager.getUser()?.uid ?: "student_01"
+        try {
+            val downloadUrl = FirebaseManager.uploadResume(studentId, fileUri, fileName)
+            try {
+                apiService.updateStudentProfile(StudentProfileUpdateRequest(resumeUrl = downloadUrl))
+            } catch (_: Exception) {}
+
+            Resource.Success(downloadUrl)
+        } catch (e: Exception) {
+            Resource.Error(e.message ?: "Failed to upload resume to Firebase Storage.")
+        }
     }
 
     override suspend fun getAnnouncements(): Resource<List<AnnouncementModel>> =
@@ -254,6 +357,8 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
             Resource.Success(SampleDataGenerator.samplePlacementAnnouncements.toList())
         }
 
+    // --- Interview Slot Booking ---
+
     override suspend fun getRoundsForDrive(driveId: String): Resource<List<RecruitmentRoundModel>> =
         withContext(Dispatchers.IO) {
             try {
@@ -265,16 +370,18 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
                 }
             } catch (_: Exception) {}
 
-            val mockRound = RecruitmentRoundModel(
-                id = "round_default_$driveId",
-                driveId = driveId,
-                roundOrder = 1,
-                roundName = "Technical & Architecture Interview",
-                roundType = "TECHNICAL_INTERVIEW",
-                venue = "Google Meet Virtual Room",
-                instructions = "Please join 5 minutes prior with camera on and code editor ready."
+            Resource.Success(
+                listOf(
+                    RecruitmentRoundModel(
+                        id = "round_default_$driveId",
+                        driveId = driveId,
+                        roundOrder = 1,
+                        roundName = "Technical & Coding Interview",
+                        roundType = "TECHNICAL_INTERVIEW",
+                        instructions = "Please bring your student ID and ensure a stable network connection."
+                    )
+                )
             )
-            Resource.Success(listOf(mockRound))
         }
 
     override suspend fun getSlotsForRound(roundId: String): Resource<List<InterviewSlotModel>> =
@@ -288,45 +395,28 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
                 }
             } catch (_: Exception) {}
 
-            val mockSlots = listOf(
-                InterviewSlotModel(
-                    id = "slot_1_$roundId",
-                    roundId = roundId,
-                    startTime = "10:00 AM",
-                    endTime = "10:45 AM",
-                    venueOrLink = "https://meet.google.com/xyz-placement",
-                    totalCapacity = 1,
-                    bookedCount = 0
-                ),
-                InterviewSlotModel(
-                    id = "slot_2_$roundId",
-                    roundId = roundId,
-                    startTime = "11:30 AM",
-                    endTime = "12:15 PM",
-                    venueOrLink = "https://meet.google.com/xyz-placement",
-                    totalCapacity = 1,
-                    bookedCount = 0
-                ),
-                InterviewSlotModel(
-                    id = "slot_3_$roundId",
-                    roundId = roundId,
-                    startTime = "02:00 PM",
-                    endTime = "02:45 PM",
-                    venueOrLink = "https://meet.google.com/xyz-placement",
-                    totalCapacity = 1,
-                    bookedCount = 1
-                ),
-                InterviewSlotModel(
-                    id = "slot_4_$roundId",
-                    roundId = roundId,
-                    startTime = "03:30 PM",
-                    endTime = "04:15 PM",
-                    venueOrLink = "https://meet.google.com/xyz-placement",
-                    totalCapacity = 1,
-                    bookedCount = 0
+            Resource.Success(
+                listOf(
+                    InterviewSlotModel(
+                        id = "slot_sample_1",
+                        roundId = roundId,
+                        startTime = "2026-11-12T10:00:00",
+                        endTime = "2026-11-12T10:45:00",
+                        venueOrLink = "Virtual: Google Meet",
+                        totalCapacity = 1,
+                        bookedCount = 0
+                    ),
+                    InterviewSlotModel(
+                        id = "slot_sample_2",
+                        roundId = roundId,
+                        startTime = "2026-11-12T11:00:00",
+                        endTime = "2026-11-12T11:45:00",
+                        venueOrLink = "Virtual: Google Meet",
+                        totalCapacity = 1,
+                        bookedCount = 0
+                    )
                 )
             )
-            Resource.Success(mockSlots)
         }
 
     override suspend fun bookSlot(
@@ -336,23 +426,18 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
     ): Resource<InterviewBookingModel> = withContext(Dispatchers.IO) {
         try {
             val response = withTimeoutOrNull(4000L) {
-                apiService.bookInterviewSlot(
-                    SlotBookingRequest(
-                        slotId = slotId,
-                        applicationId = applicationId,
-                        notes = notes
-                    )
-                )
+                apiService.bookInterviewSlot(SlotBookingRequest(slotId, applicationId, notes))
             }
             if (response != null && response.isSuccessful && response.body() != null) {
                 return@withContext Resource.Success(response.body()!!)
             } else if (response != null && response.code() == 409) {
-                return@withContext Resource.Error("This interview slot has already been booked by another student.")
+                return@withContext Resource.Error("This interview slot is already fully booked. Please select another slot.")
             } else if (response != null && response.code() == 400) {
-                return@withContext Resource.Error("You already have an active interview slot booked for this round.")
+                return@withContext Resource.Error("You already have an interview slot booked for this recruitment round.")
             }
         } catch (_: Exception) {}
 
+        // Mock confirmation for demo
         val booking = InterviewBookingModel(
             id = "booking_" + System.currentTimeMillis(),
             slotId = slotId,
@@ -390,10 +475,6 @@ class PlacementRepositoryImpl(context: Context) : PlacementRepository {
                 }
             } catch (_: Exception) {}
 
-            val cancelled = InterviewBookingModel(
-                id = bookingId,
-                status = "CANCELLED"
-            )
-            Resource.Success(cancelled)
+            Resource.Error("Could not cancel interview booking.")
         }
 }

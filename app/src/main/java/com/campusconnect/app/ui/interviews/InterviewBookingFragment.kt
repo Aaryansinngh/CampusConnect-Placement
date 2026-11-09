@@ -84,8 +84,18 @@ class InterviewBookingFragment : Fragment() {
 
     private fun setupListeners() {
         binding.btnConfirmBooking.setOnClickListener {
-            val slot = selectedSlot ?: return@setOnClickListener
+            val slot = selectedSlot
+            if (slot == null) {
+                Snackbar.make(
+                    binding.root,
+                    "Please tap and select an available interview time slot above.",
+                    Snackbar.LENGTH_LONG
+                ).show()
+                return@setOnClickListener
+            }
             val notes = binding.etNotes.text?.toString()?.trim().takeIf { !it.isNullOrBlank() }
+            binding.btnConfirmBooking.isEnabled = false
+            binding.btnConfirmBooking.text = "Reserving Slot..."
             viewModel.bookSlot(slot.id, applicationId, notes)
         }
     }
