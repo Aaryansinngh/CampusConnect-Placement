@@ -22,3 +22,5 @@ app/google-services.json
 
 # Local environment files
 .env
+
+backend/.venv/
