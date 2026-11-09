@@ -1,0 +1,24 @@
+.env
+.env.*
+!.env.example
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.sqlite
+.gradle/
+.idea/
+local.properties
+node_modules/
+dist/
+build/
+*.log
+
+*.backup
+
+# Firebase configuration
+app/google-services.json
+
+# Local environment files
+.env
